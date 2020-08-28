@@ -28,7 +28,7 @@ device_ids = [0, 1]
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 warnings.filterwarnings("ignore")
-
+warnings.filterwarnings(action='ignore', category=FutureWarning, module='numpy')
 
 def parse_args():
     # Parses the node2vec arguments.
@@ -596,7 +596,8 @@ if len(num) > 1:
         test_data[:, i + 1] += num_list[node_type_mapping[i + 1] - 1]
 
 num = torch.as_tensor(num)
-num_list = torch.as_tensor(num_list)
+# num_list = torch.as_tensor(num_list)
+num_list = torch.tensor(num_list).float()
 
 print("walk type", args.walk)
 # At this stage, the index still starts from zero
