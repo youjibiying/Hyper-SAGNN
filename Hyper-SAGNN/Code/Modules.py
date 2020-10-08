@@ -12,7 +12,7 @@ device_ids = [0, 1]
 
 def get_non_pad_mask(seq):
     assert seq.dim() == 2
-    return seq.ne(0).type(torch.float).unsqueeze(-1)
+    return seq.ne(0).type(torch.float).unsqueeze(-1) #取出不等于0的为True
 
 
 def get_attn_key_pad_mask(seq_k, seq_q):
@@ -20,7 +20,7 @@ def get_attn_key_pad_mask(seq_k, seq_q):
     
     # Expand to fit the shape of key query attention matrix.
     len_q = seq_q.size(1)
-    padding_mask = seq_k.eq(0)
+    padding_mask = seq_k.eq(0) #  不等于0
     padding_mask = padding_mask.unsqueeze(
         1).expand(-1, len_q, -1)  # b x lq x lk
     
@@ -48,7 +48,7 @@ class SparseEmbedding(nn.Module):
             try:
                 try:
                     self.embedding = torch.from_numpy(
-                        np.asarray(embedding_weight.todense())).to(device)
+                        np.asarray(embedding_weight.todense())).to(device) # asarray用于创建数组
                 except BaseException:
                     self.embedding = torch.from_numpy(
                         np.asarray(embedding_weight)).to(device)
@@ -97,7 +97,7 @@ class TiedAutoEncoder(nn.Module):
             torch.nn.init.uniform_(self.bias2, -bound, bound)
 
     def forward(self, input):
-        encoded_feats = F.linear(input, self.weight, self.bias1)
+        encoded_feats = F.linear(input, self.weight, self.bias1) # Input: (N,∗,in_features) Weight: (out_features,in_features) input*weight^T+bias 
         encoded_feats = F.tanh(encoded_feats)
         reconstructed_output = F.linear(encoded_feats, self.weight.t(), self.bias2)
         return encoded_feats, reconstructed_output
@@ -111,7 +111,7 @@ class MultipleEmbedding(nn.Module):
             num_list=None,
             node_type_mapping=None):
         super().__init__()
-        print(dim)
+        print('embedding dim:',dim)
         self.num_list = torch.tensor([0] + list(num_list)).long().to(device)
         print(self.num_list)
         self.node_type_mapping = node_type_mapping
@@ -129,8 +129,8 @@ class MultipleEmbedding(nn.Module):
         test = torch.zeros(1, device=device).long()
         self.input_size = []
         for w in self.embeddings:
-            self.input_size.append(w(test).shape[-1])
-        
+            self.input_size.append(w(test).shape[-1]) # 提取不同类型顶点的feature dim
+        # 因为3种类型的顶点所用的features dim 不同，所以这里要针对embeddings 的特征维度使用三种不同的autoencoder 
         self.wstack = [TiedAutoEncoder(self.input_size[i],self.dim).to(device) for i,w in enumerate(self.embeddings)]
         self.norm_stack =[nn.LayerNorm(self.dim).to(device) for w in self.embeddings]
         for i, w in enumerate(self.wstack):
@@ -138,19 +138,18 @@ class MultipleEmbedding(nn.Module):
             self.add_module("Embedding_norm%d" % (i), self.norm_stack[i])
             
         self.dropout = nn.Dropout(0.25)
-    
     def forward(self, x):
         
         final = torch.zeros((len(x), self.dim)).to(device)
         recon_loss = torch.Tensor([0.0]).to(device)
         for i in range(len(self.num_list) - 1):
-            select = (x >= (self.num_list[i] + 1)) & (x < (self.num_list[i + 1] + 1))
+            select = (x >= (self.num_list[i] + 1)) & (x < (self.num_list[i + 1] + 1)) # 限定batchsize 中出现的顶点的范围。num_list=[0, 146, 216, 221]
             if torch.sum(select) == 0:
                 continue
-            adj = self.embeddings[i](x[select] - self.num_list[i] - 1)
+            adj = self.embeddings[i](x[select] - self.num_list[i] - 1) # embedding 中存放的是三个特征矩阵 [[146,75],[70,151],[5,216]]
             output = self.dropout(adj)
-            output, recon = self.wstack[i](output)
-            output = self.norm_stack[i](output)
+            output, recon = self.wstack[i](output) # autoencoder
+            output = self.norm_stack[i](output) # layernorm
             final[select] = output
             recon_loss += sparse_autoencoder_error(recon, adj)
             
@@ -204,7 +203,7 @@ class Classifier(nn.Module):
         super().__init__()
         
         self.pff_classifier = PositionwiseFeedForward(
-            [d_model, 1], reshape=True, use_bias=True)
+            [d_model, 1], reshape=True, use_bias=True) #nn.conv1d [65,1]
         
         self.node_embedding = node_embedding
         self.encode1 = EncoderLayer(
@@ -212,8 +211,8 @@ class Classifier(nn.Module):
             d_model,
             d_k,
             d_v,
-            dropout_mul=0.3,
-            dropout_pff=0.4,
+            dropout_mul=0.3, # multihead 中所使用的dropout
+            dropout_pff=0.4, # PositionwiseFeedForward 中用的droupout
             diag_mask=diag_mask,
             bottle_neck=bottle_neck)
         # self.encode2 = EncoderLayer(n_head, d_model, d_k, d_v, dropout_mul=0.0, dropout_pff=0.0, diag_mask = diag_mask, bottle_neck=bottle_neck)
@@ -227,15 +226,16 @@ class Classifier(nn.Module):
         sz_b, len_seq = x.shape
         # print(torch.max(x), torch.min(x))
         
-        x, recon_loss = self.node_embedding(x.view(-1))
+        x, recon_loss = self.node_embedding(x.view(-1)) # 先根据batch size 所对应的顶点序号，进行分组（3组）， 对应不同组提取embedding ,
+        # 然后经过的autoencoder之后的中间变量即为x=tanh(Wx+b),recon_loss 为||sign(A_i)*(A_i-A_i_pre)||^2 其中A_i_pre=Wx+b
         if return_recon:
-            return x.view(sz_b, len_seq, -1), recon_loss
+            return x.view(sz_b, len_seq, -1), recon_loss # 恢复原来的每一行对应边顶点数矩阵
         else:
-            return x.view(sz_b, len_seq, -1)
+            return x.view(sz_b, len_seq, -1) 
     
     def get_embedding(self, x, slf_attn_mask, non_pad_mask,return_recon = False):
         if return_recon:
-            x, recon_loss = self.get_node_embeddings(x,return_recon)
+            x, recon_loss = self.get_node_embeddings(x, return_recon) # 经过autoencoder 嵌入特征
         else:
             x = self.get_node_embeddings(x, return_recon)
         dynamic, static, attn = self.encode1(x, x, slf_attn_mask, non_pad_mask)
@@ -279,15 +279,14 @@ class Classifier(nn.Module):
         else:
             output = dynamic
         
-        output = self.pff_classifier(output)
-        output = torch.sigmoid(output)
+        output = self.pff_classifier(output) #conv1d【64->1】
+        output = torch.sigmoid(output) # sigma(o_i)
         
         
         if get_outlier is not None:
             k = get_outlier
             outlier = (
-                    (1 -
-                     output) *
+                    (1 - output) *
                     non_pad_mask).topk(
                 k,
                 dim=1,
@@ -295,7 +294,7 @@ class Classifier(nn.Module):
                 sorted=True)[1]
             return outlier.view(-1, k)
         
-        mode = 'sum'
+        mode = 'sum' # 1/K(o_1,...o_k)
         
         if mode == 'min':
             output, _ = torch.max(
@@ -305,7 +304,7 @@ class Classifier(nn.Module):
         elif mode == 'sum':
             output = torch.sum(output * non_pad_mask, dim=-2, keepdim=False)
             mask_sum = torch.sum(non_pad_mask, dim=-2, keepdim=False)
-            output /= mask_sum
+            output /= mask_sum  # /K
         elif mode == 'first':
             output = output[:, 0, :]
             
@@ -332,7 +331,7 @@ class PositionwiseFeedForward(nn.Module):
             layer_norm=False):
         super(PositionwiseFeedForward, self).__init__()
         self.w_stack = []
-        self.dims = dims
+        self.dims = dims # 前面进行前向传递时：d_model,d_model, d_model，后面进行W(d-s)**2时 64,1
         for i in range(len(dims) - 1):
             self.w_stack.append(nn.Conv1d(dims[i], dims[i + 1], 1, use_bias))
             self.add_module("PWF_Conv%d" % (i), self.w_stack[-1])
@@ -357,7 +356,7 @@ class PositionwiseFeedForward(nn.Module):
             if self.dropout is not None:
                 output = self.dropout(output)
         
-        output = self.w_stack[-1](output)
+        output = self.w_stack[-1](output) # 一维卷积需要input的第2维（共3维）与其设定的输入维相同 64->1
         output = output.transpose(1, 2)
         
         if self.reshape:
@@ -438,8 +437,8 @@ class ScaledDotProductAttention(nn.Module):
                 result = result * mask
                 result = result / (result.sum(dim=dim, keepdim=True) + 1e-13)
             else:
-                masked_vector = vector.masked_fill(
-                    (1 - mask).byte(), mask_fill_value)
+                masked_vector = vector.masked_fill( # Fills elements of vector with mask_fill_value where (1-mask) is True.
+                    (1 - mask).byte(), mask_fill_value) # 将对角元用 -1e32 填充 
                 result = torch.nn.functional.softmax(masked_vector, dim=dim)
         return result
     
@@ -451,7 +450,7 @@ class ScaledDotProductAttention(nn.Module):
             attn = attn.masked_fill(mask, -float('inf'))
         
         attn = self.masked_softmax(
-            attn, diag_mask, dim=-1, memory_efficient=True)
+            attn, diag_mask, dim=-1, memory_efficient=True) # 经过主对角线的mask，对最后一个维度进行solfmax ,得到[n*len_edges,3,3]
         
         
         output = torch.bmm(attn, v)
@@ -489,7 +488,7 @@ class MultiHeadAttention(nn.Module):
                         std=np.sqrt(2.0 / (d_model + d_v)))
         
         self.attention = ScaledDotProductAttention(
-            temperature=np.power(d_k, 0.5))
+            temperature=np.power(d_k, 0.5)) # attn/temperature K^TQ/sqrt(d_k)*V
         
         self.fc1 = FeedForward([n_head * d_v, d_model], use_bias=False)
         self.fc2 = FeedForward([n_head * d_v, d_model], use_bias=False)
@@ -509,12 +508,12 @@ class MultiHeadAttention(nn.Module):
     def pass_(self, inputs):
         return inputs
     
-    def forward(self, q, k, v, diag_mask, mask=None):
+    def forward(self, q, k, v, diag_mask, mask=None): # self attn q=k=v
         d_k, d_v, n_head = self.d_k, self.d_v, self.n_head
         
         residual_dynamic = q
         residual_static = v
-        
+        # q,k,v都是经autoencoder的值shape=[batch_size+batch_size*5=571,3,bottle_neck=64]
         q = self.layer_norm1(q)
         k = self.layer_norm2(k)
         v = self.layer_norm3(v)
@@ -523,7 +522,7 @@ class MultiHeadAttention(nn.Module):
         sz_b, len_k, _ = k.shape
         sz_b, len_v, _ = v.shape
         
-        q = self.w_qs(q).view(sz_b, len_q, n_head, d_k)
+        q = self.w_qs(q).view(sz_b, len_q, n_head, d_k) # multi liner
         k = self.w_ks(k).view(sz_b, len_k, n_head, d_k)
         v = self.w_vs(v).view(sz_b, len_v, n_head, d_v)
         
@@ -550,7 +549,7 @@ class MultiHeadAttention(nn.Module):
         else:
             self.diag_mask = (torch.ones((len_v, len_v), device=device))
             if self.diag_mask_flag == 'True':
-                self.diag_mask -= torch.eye(len_v, len_v, device=device)
+                self.diag_mask -= torch.eye(len_v, len_v, device=device) # 去除对角元
             self.diag_mask = self.diag_mask.repeat(n, 1, 1)
             diag_mask = self.diag_mask
         
@@ -562,13 +561,14 @@ class MultiHeadAttention(nn.Module):
         dynamic = dynamic.view(n_head, sz_b, len_q, d_v)
         dynamic = dynamic.permute(
             1, 2, 0, 3).contiguous().view(
-            sz_b, len_q, -1)  # b x lq x (n*dv)
+            sz_b, len_q, -1)  # batch x len_q x (n_head*dim_v)
+
         static = v.view(n_head, sz_b, len_q, d_v)
         static = static.permute(
             1, 2, 0, 3).contiguous().view(
             sz_b, len_q, -1)  # b x lq x (n*dv)
         
-        dynamic = self.dropout(self.fc1(dynamic)) if self.dropout is not None else self.fc1(dynamic)
+        dynamic = self.dropout(self.fc1(dynamic)) if self.dropout is not None else self.fc1(dynamic) # linear(128,64)
         static = self.dropout(self.fc2(static)) if self.dropout is not None else self.fc2(static)
         
         
@@ -584,7 +584,7 @@ class EncoderLayer(nn.Module):
             d_model,
             d_k,
             d_v,
-            dropout_mul,
+            dropout_mul, 
             dropout_pff,
             diag_mask,
             bottle_neck):
@@ -608,9 +608,9 @@ class EncoderLayer(nn.Module):
     
     # self.dropout = nn.Dropout(0.2)
     
-    def forward(self, dynamic, static, slf_attn_mask, non_pad_mask):
+    def forward(self, dynamic, static, slf_attn_mask, non_pad_mask): # 这里传进来的dynamic 与static 相等
         dynamic, static1, attn = self.mul_head_attn(
-            dynamic, dynamic, static, slf_attn_mask)
+            dynamic, dynamic, static, slf_attn_mask) #  q, k, v, diag_mask
         dynamic = self.pff_n1(dynamic * non_pad_mask) * non_pad_mask
         static1 = self.pff_n2(static * non_pad_mask) * non_pad_mask
         
