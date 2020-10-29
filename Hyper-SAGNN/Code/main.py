@@ -114,13 +114,17 @@ def train_batch_hyperedge(model, loss_func, batch_data, batch_weight, type, y=""
     # TODO: 这里没有y 的时候会自己构建正负样本，而用于回归的时候我们不需要负样本，所以要给定好吗，每条边对应的y 值
     # When label is not generated, prepare the data
     if len(y) == 0:
-        x, y, w = generate_negative(x, "train_dict", type, w) # x,y,z 前面部分都对应的positive sample， 后面部分对应的negative sample，负样本由正样本改变一到两个顶点变成的，w正样本为5 ，负样本为1
+        # x,y,z 前面部分都对应的positive sample， 后面部分对应的negative sample，负样本由正样本改变一到两个顶点变成的，w正样本为5 ，负样本为1
+        x, y, w = generate_negative(x, "train_dict", type, w)
         index = torch.randperm(len(x))
         x, y, w = x[index], y[index], w[index]
 
     # forward
     pred, recon_loss = model(x, return_recon=True)
-    loss = loss_func(pred, y, weight=w)
+    try:
+        loss = loss_func(pred, y, weight=w)  # 给loss指定权重，交叉熵损失
+    except:
+        loss = loss_func(pred,y) # mse loss
     return pred, y, loss, recon_loss
 
 
@@ -162,14 +166,17 @@ def train_epoch(args, model, loss_func, training_data, optimizer, batch_size, on
     # Simultaneously train on 2 models: hyperedge-prediction (1) & random-walk with skipgram (2)
     model_1, model_2 = model  # classifier_model, Randomwalk_Word2vec
     (loss_1, beta), (loss_2, alpha) = loss_func
-    edges, edge_weight, sentences = training_data  # 1154条边
-    y = torch.tensor([])
-
+    edges, edge_weight, sentences, y = training_data  # 1154条边
+    # y = torch.tensor(y).to(device) #
+    # y=torch.tensor([])
     # Permutate all the data
     index = torch.randperm(len(edges))
     edges, edge_weight = edges[index], edge_weight[index]
     if len(y) > 0:
         y = y[index]
+        edges = npTo_padTensor(edges).to(device)
+        edge_weight = torch.tensor(edge_weight).to(device)
+        y = torch.tensor(y,dtype=torch.float32).to(device)
 
     model_1.train()
     model_2.train()
@@ -207,14 +214,13 @@ def train_epoch(args, model, loss_func, training_data, optimizer, batch_size, on
                     continue
 
             pred, batch_y, loss_bce, loss_recon = train_batch_hyperedge(
-                model_1, loss_1, batch_edge, batch_edge_weight, type, y=batch_y) # 对每条边通过node_embedding 提取特征，通过autoencoder将每个顶点的特征维度弄成一致，进行mutihead and positionforward， 最后计算伪欧式距离
+                model_1, loss_1, batch_edge, batch_edge_weight, type, y=batch_y)  # 对每条边通过node_embedding 提取特征，通过autoencoder将每个顶点的特征维度弄成一致，进行mutihead and positionforward， 最后计算伪欧式距离
 
             loss_skipgram = torch.Tensor([0.0]).to(device)
             loss = beta * loss_bce + alpha * loss_skipgram + loss_recon * args.rw
             acc_list.append(accuracy(pred, batch_y))
             y_list.append(batch_y)
             pred_list.append(pred)
-
         for opt in optimizer:
             opt.zero_grad()
 
@@ -224,9 +230,9 @@ def train_epoch(args, model, loss_func, training_data, optimizer, batch_size, on
         # update parameters
         for opt in optimizer:
             opt.step()
-
-        bar.set_description(" - (Training) BCE:  %.4f  skipgram: %.4f recon: %.4f" %
-                            (bce_total_loss / (i + 1), skipgram_total_loss / (i + 1), recon_total_loss / (i + 1)))
+        print(">>>>>MSEloss:",bce_total_loss / (i + 1))
+        # bar.set_description(" - (Training) BCE:  %.4f  skipgram: %.4f recon: %.4f" %
+        #                     (bce_total_loss / (i + 1), skipgram_total_loss / (i + 1), recon_total_loss / (i + 1)))
         bce_total_loss += loss_bce.item()
         skipgram_total_loss += loss_skipgram.item()
         recon_total_loss += loss_recon.item()
@@ -246,13 +252,18 @@ def eval_epoch(args, model, loss_func, validation_data, batch_size, type):
 
     model.eval()
     with torch.no_grad():
-        validation_data, validation_weight = validation_data
-        y = ""
+        validation_data, validation_weight, y = validation_data
+        # y=torch.tensor(y).to(device) # 改动
+        # y = ""
 
         index = torch.randperm(len(validation_data))
         validation_data, validation_weight = validation_data[index], validation_weight[index]
         if len(y) > 0:
             y = y[index]
+            # 改动
+            validation_data = npTo_padTensor(validation_data).to(device)
+            validation_weight = torch.tensor(validation_weight).to(device)
+            y = torch.tensor(y,dtype=torch.float32).to(device)
 
         pred, label = [], []
 
@@ -275,7 +286,11 @@ def eval_epoch(args, model, loss_func, validation_data, batch_size, type):
             pred.append(pred_batch)
             label.append(batch_y)
 
-            loss = loss_func(pred_batch, batch_y, weight=batch_w)
+            try:
+                loss = loss_func(pred_batch,batch_y, weight=pred_batch)  # 给loss指定权重，交叉熵损失
+            except:
+                loss = loss_func(pred_batch,batch_y) # mse loss
+            # loss = loss_func(pred_batch, batch_y, weight=batch_w)
             recon_total_loss += recon_loss.item()
             bce_total_loss += loss.item()
 
@@ -361,7 +376,7 @@ def generate_negative(x, dict1, get_type='all', weight="", forward=True):  # 生
     if len(weight) == 0:
         weight = torch.ones(len(x), dtype=torch.float)
 
-    neg_list = [] # 记录所有的负样本
+    neg_list = []  # 记录所有的负样本
 
     zero_num_list = [0] + list(num_list)
     new_index = []
@@ -380,7 +395,7 @@ def generate_negative(x, dict1, get_type='all', weight="", forward=True):  # 生
             change_list = change_list_all[j, :]
         else:
             change_list = np.random.randint(0, sample.shape[-1], neg_num)
-        for i in range(neg_num): # 基于原来的正样本 sample 来改变其中的1 至多条边来生成neg_num=5个负样本
+        for i in range(neg_num):  # 基于原来的正样本 sample 来改变其中的1 至多条边来生成neg_num=5个负样本
             temp = np.copy(sample)
             a = set()
             a.add(tuple(temp))
@@ -404,7 +419,8 @@ def generate_negative(x, dict1, get_type='all', weight="", forward=True):  # 生
 
                     else:
                         # Multiple node types， 最常采用的是这种情况
-                        start = zero_num_list[node_type_mapping[change]] # 根据要改变的边的位置，来确定改变边随机的范围
+                        # 根据要改变的边的位置，来确定改变边随机的范围
+                        start = zero_num_list[node_type_mapping[change]]
                         end = zero_num_list[node_type_mapping[change] + 1]
 
                         temp[change] = np.random.randint(
@@ -448,15 +464,18 @@ def generate_negative(x, dict1, get_type='all', weight="", forward=True):  # 生
 
     new_weight = torch.tensor(weight[new_index]).to(device)
 
-    x = np2tensor_hyper(new_x, dtype=torch.long) # np2tensor_hyper 将一个0为的标量变成1*1 向量 [a]
+    # np2tensor_hyper 将一个0为的标量变成1*1 向量 [a]
+    x = np2tensor_hyper(new_x, dtype=torch.long)
     neg = np2tensor_hyper(neg_list, dtype=torch.long)
-    x = pad_sequence(x, batch_first=True, padding_value=0).to(device) # 将x 每一行的维度扩充成一样
+    x = pad_sequence(x, batch_first=True, padding_value=0).to(
+        device)  # 将x 每一行的维度扩充成一样
     neg = pad_sequence(neg, batch_first=True, padding_value=0).to(device)
     # print("x", x, "neg", neg)
 
     return torch.cat([x, neg]),\
-         torch.cat([torch.ones((len(x), 1), device=device), torch.zeros((len(neg), 1), device=device)], dim=0),\
-         torch.cat(((torch.ones((len(x), 1), device=device) * new_weight.view(-1, 1), (torch.ones((len(neg), 1), device=device)))))
+        torch.cat([torch.ones((len(x), 1), device=device), torch.zeros((len(neg), 1), device=device)], dim=0),\
+        torch.cat(((torch.ones((len(x), 1), device=device) *
+                    new_weight.view(-1, 1), (torch.ones((len(neg), 1), device=device)))))
 
 
 def save_embeddings(model, origin=False):
@@ -558,7 +577,7 @@ def get_adjacency(data, norm=True):
 
 
 args = parse_args()
-neg_num = 5  # 正样本:负样本=1:5
+neg_num = 1  # 正样本:负样本=1:5
 batch_size = 96
 neg_num_w2v = 5
 bottle_neck = args.dimensions
@@ -577,7 +596,7 @@ try:
 except BaseException:
     print("no specific train weight")
     test_weight = np.ones(len(test_data), dtype='float32')
-    train_weight = np.ones(len(train_data), dtype='float32') * neg_num
+    train_weight = np.ones(len(train_data), dtype='float32') * max(1, neg_num)
 
 num = train_zip['nums_type']
 num_list = np.cumsum(num)  # 累计和
@@ -611,6 +630,42 @@ num = torch.as_tensor(num)
 # num_list = torch.as_tensor(num_list)
 num_list = torch.tensor(num_list).float()
 
+
+def cut_fun_label(train_data, test_data):
+    '''计算cut function 的值'''
+    edge = np.concatenate((train_data, test_data))
+    nums_examples = len(edge)
+    H = None
+    for i in range(edge.shape[-1]):
+        # np.sqrt(weight) because the dot product later would recovers it
+        # csr_matrix((data, (row_ind, col_ind)), [shape=(M, N)])
+        # where data, row_ind and col_ind satisfy the relationship a[row_ind[k], col_ind[k]] = data[k].
+        if H is None:
+            H = csr_matrix((np.ones(nums_examples), (edge[:, i], range(
+                nums_examples))), shape=(int(num_list[-1].item()), nums_examples))
+        else:
+            H += csr_matrix((np.ones(nums_examples), (edge[:, i], range(
+                nums_examples))), shape=(int(num_list[-1].item()), nums_examples))
+    H = H.tocoo()
+    # 用H 作为计算的数据结构，便于后面使用其他的数据集
+    cut_value = []
+    for e_i in range(nums_examples):
+        e = H.row[H.col == e_i]
+        # assert sum(e==edge[e_i])==3
+
+        cut_set = set()
+        for v in e:
+            # 将对应的边的下标放进set 里边
+            cut_set.update(H.col[H.row == v])
+        cut_value.append(len(cut_set)-1)  # 减去自身
+    cut_value = np.array(cut_value,dtype=np.float)
+    cut_value = (cut_value-cut_value.min())/(cut_value.max()-cut_value.min())
+    return cut_value[:len(train_data)], cut_value[len(train_data):]
+
+
+y_train, y_test = cut_fun_label(train_data, test_data)
+
+# y_train, y_test = '',''#torch.tensor([]), torch.tensor([])  # 改动
 print("walk type", args.walk)
 # At this stage, the index still starts from zero
 
@@ -739,7 +794,9 @@ with tf.Graph().as_default(), tf.Session() as session:
                                                 window_size=args.window_size, u_embedding=node_embedding,
                                                 sparse=False).to(device)
 
-        loss = F.binary_cross_entropy
+        # loss = F.binary_cross_entropy
+        loss = F.mse_loss # 改动
+        # torch.nn.MSELoss
         loss2 = torch.nn.BCEWithLogitsLoss(reduction='sum')
 
         summary(classifier_model, (3,))
@@ -770,6 +827,6 @@ with tf.Graph().as_default(), tf.Session() as session:
 
         train(args, (classifier_model, Randomwalk_Word2vec),
               loss=((loss, 1.0), (loss2, 0.0)),
-              training_data=(train_data, train_weight, sentences),
-              validation_data=(test_data, test_weight),
+              training_data=(train_data, train_weight, sentences, y_train),
+              validation_data=(test_data, test_weight, y_test),
               optimizer=[optimizer], epochs=3, batch_size=batch_size, only_rw=False)  # 轮

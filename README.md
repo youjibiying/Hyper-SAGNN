@@ -1,5 +1,7 @@
 ## Hyper-SAGNN: a self-attention based graph neural network for hypergraphs 
 
+# 关于改动的部分都用”“改动”标出
+
 This is an implementation of "Hyper-SAGNN: a self-attention based graph neural network for hypergraphs" (ICLR2020)
 
 The datasets included in this repo are originally from DHNE (https://github.com/tadpole/DHNE)
@@ -12,7 +14,10 @@ Tensorflow >= 1.0.0 (< 2.0.0)
 
 Pytorch >= 1.0
 
-
+todo: 将边的形式转回关联矩阵的形式，然后将对应的行（v）连接的边(e)的权重加起来。
+# 10月8号：
+todo : 将accuracy 换成 r^2 ,
+看是否能够学习，模型参数以及loss会不会下降
 
 ## Usage
 

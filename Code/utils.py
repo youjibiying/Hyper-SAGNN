@@ -2,9 +2,9 @@ import numpy as np
 import torch
 from tqdm import tqdm, trange
 from sklearn.metrics import average_precision_score, precision_score, recall_score, f1_score
-from sklearn.metrics import roc_auc_score, accuracy_score, matthews_corrcoef
+from sklearn.metrics import roc_auc_score, accuracy_score, matthews_corrcoef,r2_score,mean_absolute_error
 from concurrent.futures import as_completed, ProcessPoolExecutor
-
+from torch.nn.utils.rnn import pad_sequence
 
 def add_padding_idx(vec):
 	if len(vec.shape) == 1:
@@ -23,6 +23,11 @@ def np2tensor_hyper(vec, dtype):
 	else:
 		return torch.as_tensor(vec, dtype = dtype)
 
+def npTo_padTensor(new_x):
+    x = np2tensor_hyper(new_x, dtype=torch.long) # np2tensor_hyper 将一个0为的标量变成1*1 向量 [a]
+    x = pad_sequence(x, batch_first=True, padding_value=0)# 将x 每一行的维度扩充成一样
+    # print("x", x, "neg", neg)
+    return x
 
 def walkpath2str(walk):
 	return [list(map(str, w)) for w in tqdm(walk)]
@@ -38,6 +43,14 @@ def roc_auc_cuda(y_true, y_pred):
 	except BaseException:
 		return 0.0, 0.0
 
+def r2_mae_cuda(y_true,y_pred):
+	try:
+		y_true = y_true.cpu().detach().numpy().reshape((-1, 1))
+		y_pred = y_pred.cpu().detach().numpy().reshape((-1, 1))
+		return r2_score(y_true, y_pred),\
+			 mean_absolute_error(y_true,y_pred)
+	except BaseException:
+		return 0.0, 0.0
 
 def accuracy(output, target):
 	pred = output >= 0.5

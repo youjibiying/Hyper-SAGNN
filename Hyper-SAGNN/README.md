@@ -1,5 +1,7 @@
 ## Hyper-SAGNN: a self-attention based graph neural network for hypergraphs 
 
+# 关于改动的部分都用”“改动”标出
+
 This is an implementation of "Hyper-SAGNN: a self-attention based graph neural network for hypergraphs" (ICLR2020)
 
 The datasets included in this repo are originally from DHNE (https://github.com/tadpole/DHNE)
